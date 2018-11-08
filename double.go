@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,15 +10,18 @@ import (
 
 func handlerFunc(sema chan struct{}, err chan error) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		fmt.Printf("start handle\n")
 		if len(sema) >= 1 {
 			err <- errors.New("busy")
 			fmt.Fprintf(w, "busy, cap:%d, len:%d", cap(sema), len(sema))
+			cancel()
 			return
 		} else {
 			// lock
 			sema <- struct{}{}
-			go second(sema, err)
+			go second(ctx, sema, err)
 			fmt.Fprintf(w, "sent, cap:%d, len:%d", cap(sema), len(sema))
 			return
 		}
@@ -29,9 +33,31 @@ type Second struct {
 	Handler http.HandlerFunc
 }
 
-func second(sema chan struct{}, err chan error) {
+func second(ctx context.Context, sema chan struct{}, err chan error) {
 	fmt.Println("second job start", time.Now())
-	time.Sleep(10 * time.Second)
+	go func(ctx context.Context) {
+		fmt.Println("inner start", time.Now())
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("inner canceled", time.Now())
+				return
+			case <-time.After(1 * time.Second):
+				fmt.Println("inner sec...", time.Now())
+			}
+		}
+		fmt.Println("inner end", time.Now())
+	}(ctx)
+	for i := 0; i < 5; i++ {
+		select {
+		case <-ctx.Done():
+			fmt.Println("canceled", ctx.Err(), time.Now())
+			<-sema
+			return
+		case <-time.After(1 * time.Second):
+			fmt.Println("1 sec...", time.Now())
+		}
+	}
 	fmt.Println("second job end", time.Now())
 	// unlock
 	<-sema
