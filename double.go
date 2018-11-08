@@ -10,7 +10,7 @@ import (
 func handlerFunc(sema chan struct{}, err chan error) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("start handle\n")
-		if len(sema) == 1 {
+		if len(sema) >= 1 {
 			err <- errors.New("busy")
 			fmt.Fprintf(w, "busy, cap:%d, len:%d", cap(sema), len(sema))
 			return
@@ -25,8 +25,8 @@ func handlerFunc(sema chan struct{}, err chan error) func(w http.ResponseWriter,
 }
 
 type Second struct {
-	Sema chan struct{}
-	Err  chan error
+	Sema    chan struct{}
+	Handler http.HandlerFunc
 }
 
 func second(sema chan struct{}, err chan error) {
@@ -43,14 +43,29 @@ func errFunc(errC chan error) {
 	}
 }
 
-func main() {
-	s := &Second{}
+var defaultSecond = &Second{}
+
+func SetSema(s *Second) *Second {
 	s.Sema = make(chan struct{}, 1)
-	s.Err = make(chan error)
+	return s
+}
+func SetHandler(s *Second, errCh chan error) *Second {
+	s.Handler = handlerFunc(s.Sema, errCh)
+	return s
+}
 
-	go errFunc(s.Err)
+func main() {
+	s := defaultSecond
+	s = SetSema(s)
 
-	handler := handlerFunc(s.Sema, s.Err)
-	http.HandleFunc("/", handler)
+	errCh := make(chan error)
+	go func() {
+		for err := range errCh {
+			fmt.Println("catch err:", err)
+		}
+	}()
+	s = SetHandler(s, errCh)
+
+	http.HandleFunc("/", s.Handler)
 	http.ListenAndServe(":8080", nil)
 }
